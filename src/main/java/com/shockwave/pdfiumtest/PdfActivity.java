@@ -19,6 +19,8 @@ import com.shockwave.pdfium.PdfiumCore;
 
 import java.io.FileInputStream;
 import java.io.IOException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 
 public class PdfActivity extends ActionBarActivity {
@@ -46,6 +48,10 @@ public class PdfActivity extends ActionBarActivity {
 
     private boolean canFlipPage = true;
 
+    private final ExecutorService mPreLoadPageWorker = Executors.newSingleThreadExecutor();
+    private final ExecutorService mRenderPageWorker = Executors.newSingleThreadExecutor();
+    private Runnable mRenderRunnable;
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -63,6 +69,26 @@ public class PdfActivity extends ActionBarActivity {
             return ;
         }
 
+        mRenderRunnable = new Runnable() {
+            @Override
+            public void run() {
+                loadPageIfNeed(mCurrentPageIndex);
+
+                resetPageFit(mCurrentPageIndex);
+                mPdfCore.renderPage(mPdfDoc, mPdfSurfaceHolder.getSurface(), mCurrentPageIndex,
+                        mPageRect.left, mPageRect.top,
+                        mPageRect.width(), mPageRect.height());
+
+                mPreLoadPageWorker.submit(new Runnable() {
+                    @Override
+                    public void run() {
+                        loadPageIfNeed(mCurrentPageIndex + 1);
+                        loadPageIfNeed(mCurrentPageIndex + 2);
+                    }
+                });
+            }
+        };
+
         SurfaceView surfaceView = (SurfaceView)findViewById(R.id.view_surface_main);
         surfaceView.getHolder().addCallback(new SurfaceHolder.Callback() {
             @Override
@@ -70,13 +96,7 @@ public class PdfActivity extends ActionBarActivity {
                 isSurfaceCreated = true;
                 updateSurface(holder);
                 if (mPdfDoc != null) {
-                    mPdfCore.openPage(mPdfDoc, 0);
-
-                    resetPageFit(0);
-                    mPdfCore.renderPage(mPdfDoc, mPdfSurfaceHolder.getSurface(), 0,
-                            mPageRect.left, mPageRect.top,
-                            mPageRect.width(), mPageRect.height());
-                    //mPdfCore.renderPage(mPdfDoc, mPdfSurface, 0);
+                    mRenderPageWorker.submit(mRenderRunnable);
                 }
             }
 
@@ -108,8 +128,9 @@ public class PdfActivity extends ActionBarActivity {
         }
     }
 
-    private void loadPageIfNeed(int pageIndex){
-        if(!mPdfDoc.hasPage(pageIndex)){
+    private void loadPageIfNeed(final int pageIndex){
+        if( pageIndex >= 0 && pageIndex < mPageCount && !mPdfDoc.hasPage(pageIndex) ){
+            Log.d(TAG, "Load page: " + mCurrentPageIndex);
             mPdfCore.openPage(mPdfDoc, pageIndex);
         }
     }
@@ -176,12 +197,19 @@ public class PdfActivity extends ActionBarActivity {
 
             mTransformMatrix.setTranslate(distanceX * -1, distanceY * -1);
             mPageRectF.set(mPageRect);
-            mTransformMatrix.mapRect(mPageRectF);
+            RectF tmpRectF = new RectF(mPageRectF);
+            mTransformMatrix.mapRect(tmpRectF);
 
-            if(mPageRectF.left > mScreenRect.left ||
-                    mPageRectF.right < mScreenRect.right ||
-                    mPageRectF.bottom < mScreenRect.bottom ||
-                    mPageRectF.top > mScreenRect.top) return true;
+            if(tmpRectF.left <= mScreenRect.left && tmpRectF.right >= mScreenRect.right ||
+                    (tmpRectF.left >= mScreenRect.left && tmpRectF.right <= mScreenRect.right) ){
+                mPageRectF.left = tmpRectF.left;
+                mPageRectF.right = tmpRectF.right;
+            }
+            if(tmpRectF.top <= mScreenRect.top && tmpRectF.bottom >= mScreenRect.bottom ||
+                    (tmpRectF.top >= mScreenRect.top && tmpRectF.bottom <= mScreenRect.bottom) ){
+                mPageRectF.top = tmpRectF.top;
+                mPageRectF.bottom = tmpRectF.bottom;
+            }
 
             rectF2Rect(mPageRectF, mPageRect);
 
@@ -202,12 +230,8 @@ public class PdfActivity extends ActionBarActivity {
                     Log.d(TAG, "Flip backward");
                     mCurrentPageIndex++;
                     Log.d(TAG, "Next Index: " + mCurrentPageIndex);
-                    loadPageIfNeed(mCurrentPageIndex);
 
-                    resetPageFit(mCurrentPageIndex);
-                    mPdfCore.renderPage(mPdfDoc, mPdfSurfaceHolder.getSurface(), mCurrentPageIndex,
-                            mPageRect.left, mPageRect.top,
-                            mPageRect.width(), mPageRect.height());
+                    mRenderPageWorker.submit(mRenderRunnable);
                 }
             }
 
@@ -216,12 +240,8 @@ public class PdfActivity extends ActionBarActivity {
                 if(mCurrentPageIndex > 0){
                     mCurrentPageIndex--;
                     Log.d(TAG, "Next Index: " + mCurrentPageIndex);
-                    loadPageIfNeed(mCurrentPageIndex);
 
-                    resetPageFit(mCurrentPageIndex);
-                    mPdfCore.renderPage(mPdfDoc, mPdfSurfaceHolder.getSurface(), mCurrentPageIndex,
-                            mPageRect.left, mPageRect.top,
-                            mPageRect.width(), mPageRect.height());
+                    mRenderPageWorker.submit(mRenderRunnable);
                 }
             }
 
