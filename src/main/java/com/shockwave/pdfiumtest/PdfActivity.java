@@ -130,7 +130,7 @@ public class PdfActivity extends ActionBarActivity {
 
     private void loadPageIfNeed(final int pageIndex){
         if( pageIndex >= 0 && pageIndex < mPageCount && !mPdfDoc.hasPage(pageIndex) ){
-            Log.d(TAG, "Load page: " + mCurrentPageIndex);
+            Log.d(TAG, "Load page: " + pageIndex);
             mPdfCore.openPage(mPdfDoc, pageIndex);
         }
     }
@@ -195,21 +195,21 @@ public class PdfActivity extends ActionBarActivity {
             if(canFlipPage) return false;
             Log.d(TAG, "Drag");
 
-            mTransformMatrix.setTranslate(distanceX * -1, distanceY * -1);
-            mPageRectF.set(mPageRect);
-            RectF tmpRectF = new RectF(mPageRectF);
-            mTransformMatrix.mapRect(tmpRectF);
+            distanceX *= -1f;
+            distanceY *= -1f;
 
-            if(tmpRectF.left <= mScreenRect.left && tmpRectF.right >= mScreenRect.right ||
-                    (tmpRectF.left >= mScreenRect.left && tmpRectF.right <= mScreenRect.right) ){
-                mPageRectF.left = tmpRectF.left;
-                mPageRectF.right = tmpRectF.right;
-            }
-            if(tmpRectF.top <= mScreenRect.top && tmpRectF.bottom >= mScreenRect.bottom ||
-                    (tmpRectF.top >= mScreenRect.top && tmpRectF.bottom <= mScreenRect.bottom) ){
-                mPageRectF.top = tmpRectF.top;
-                mPageRectF.bottom = tmpRectF.bottom;
-            }
+            if( (mPageRect.left < mScreenRect.left && mPageRect.right < mScreenRect.right && distanceX < 0) ||
+                    (mPageRect.right > mScreenRect.right && mPageRect.left > mScreenRect.left && distanceX > 0) )
+                distanceX = 0f;
+            if( (mPageRect.top < mScreenRect.top && mPageRect.bottom < mScreenRect.bottom && distanceY < 0) ||
+                    (mPageRect.bottom > mScreenRect.bottom && mPageRect.top > mScreenRect.top && distanceY > 0) )
+                distanceY = 0f;
+
+            if(distanceX == 0f && distanceY == 0f) return true;
+
+            mTransformMatrix.setTranslate(distanceX, distanceY);
+            mPageRectF.set(mPageRect);
+            mTransformMatrix.mapRect(mPageRectF);
 
             rectF2Rect(mPageRectF, mPageRect);
 
