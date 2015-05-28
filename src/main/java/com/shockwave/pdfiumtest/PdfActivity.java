@@ -104,6 +104,9 @@ public class PdfActivity extends ActionBarActivity {
             public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {
                 Log.w(TAG, "Surface Changed");
                 updateSurface(holder);
+                if(mPdfDoc != null){
+                    mRenderPageWorker.submit(mRenderRunnable);
+                }
             }
 
             @Override
@@ -146,24 +149,49 @@ public class PdfActivity extends ActionBarActivity {
         float screenWidth = mPdfSurfaceHolder.getSurfaceFrame().width();
         float screenHeight = mPdfSurfaceHolder.getSurfaceFrame().height();
 
-        if( (pageWidth / pageHeight) < (screenWidth / screenHeight) ){
-            //Situation one: fit height
-            pageWidth *= (screenHeight / pageHeight);
-            pageHeight = screenHeight;
+        /**Portrait**/
+        if(screenWidth < screenHeight){
+            if( (pageWidth / pageHeight) < (screenWidth / screenHeight) ){
+                //Situation one: fit height
+                pageWidth *= (screenHeight / pageHeight);
+                pageHeight = screenHeight;
 
-            mPageRect.top = 0;
-            mPageRect.left = (int)(screenWidth - pageWidth) / 2;
-            mPageRect.right = (int)(mPageRect.left + pageWidth);
-            mPageRect.bottom = (int)pageHeight;
+                mPageRect.top = 0;
+                mPageRect.left = (int)(screenWidth - pageWidth) / 2;
+                mPageRect.right = (int)(mPageRect.left + pageWidth);
+                mPageRect.bottom = (int)pageHeight;
+            }else{
+                //Situation two: fit width
+                pageHeight *= (screenWidth / pageWidth);
+                pageWidth = screenWidth;
+
+                mPageRect.left = 0;
+                mPageRect.top = (int)(screenHeight - pageHeight) / 2;
+                mPageRect.bottom = (int)(mPageRect.top + pageHeight);
+                mPageRect.right = (int)pageWidth;
+            }
         }else{
-            //Situation two: fit width
-            pageHeight *= (screenWidth / pageWidth);
-            pageWidth = screenWidth;
 
-            mPageRect.left = 0;
-            mPageRect.top = (int)(screenHeight - pageHeight) / 2;
-            mPageRect.bottom = (int)(mPageRect.top + pageHeight);
-            mPageRect.right = (int)pageWidth;
+            /**Landscape**/
+            if( pageWidth > pageHeight ){
+                //Situation one: fit height
+                pageWidth *= (screenHeight / pageHeight);
+                pageHeight = screenHeight;
+
+                mPageRect.top = 0;
+                mPageRect.left = (int)(screenWidth - pageWidth) / 2;
+                mPageRect.right = (int)(mPageRect.left + pageWidth);
+                mPageRect.bottom = (int)pageHeight;
+            }else{
+                //Situation two: fit width
+                pageHeight *= (screenWidth / pageWidth);
+                pageWidth = screenWidth;
+
+                mPageRect.left = 0;
+                mPageRect.top = 0;
+                mPageRect.bottom = (int)(mPageRect.top + pageHeight);
+                mPageRect.right = (int)pageWidth;
+            }
         }
 
         canFlipPage = true;
@@ -190,9 +218,10 @@ public class PdfActivity extends ActionBarActivity {
     private class SlidingDetector extends GestureDetector.SimpleOnGestureListener {
 
         @Override
+        /*TODO: Fix landscape scrolling*/
         public boolean onScroll(MotionEvent e1, MotionEvent e2, float distanceX, float distanceY){
             if(!isSurfaceCreated) return false;
-            if(canFlipPage) return false;
+            if(canFlipPage && distanceX != 0f) return false;
             Log.d(TAG, "Drag");
 
             distanceX *= -1f;
@@ -224,6 +253,7 @@ public class PdfActivity extends ActionBarActivity {
         public boolean onFling(MotionEvent e1, MotionEvent e2, float velocityX, float velocityY){
             if(!isSurfaceCreated) return false;
             if(!canFlipPage) return true;
+            if(velocityX == 0f) return false;
 
             if(velocityX < 100f){ //Forward
                 if(mCurrentPageIndex < mPageCount - 1){
