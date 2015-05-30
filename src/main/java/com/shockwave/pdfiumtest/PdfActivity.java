@@ -45,8 +45,8 @@ public class PdfActivity extends ActionBarActivity {
     private final Rect mScreenRect = new Rect();
     private final Matrix mTransformMatrix = new Matrix();
     private boolean isScaling = false;
+    private boolean isReset = true;
 
-    private boolean canFlipPage = true;
 
     private final ExecutorService mPreLoadPageWorker = Executors.newSingleThreadExecutor();
     private final ExecutorService mRenderPageWorker = Executors.newSingleThreadExecutor();
@@ -194,7 +194,7 @@ public class PdfActivity extends ActionBarActivity {
             }
         }
 
-        canFlipPage = true;
+        isReset = true;
     }
 
     private void rectF2Rect(RectF inRectF, Rect outRect){
@@ -217,30 +217,38 @@ public class PdfActivity extends ActionBarActivity {
 
     private class SlidingDetector extends GestureDetector.SimpleOnGestureListener {
 
+        private boolean checkFlippable(){
+            return ( mPageRect.left >= mScreenRect.left &&
+                        mPageRect.right <= mScreenRect.right );
+        }
+
         @Override
-        /*TODO: Fix landscape scrolling*/
         public boolean onScroll(MotionEvent e1, MotionEvent e2, float distanceX, float distanceY){
             if(!isSurfaceCreated) return false;
-            if(canFlipPage && distanceX != 0f) return false;
             Log.d(TAG, "Drag");
 
             distanceX *= -1f;
             distanceY *= -1f;
 
-            if( (mPageRect.left < mScreenRect.left && mPageRect.right < mScreenRect.right && distanceX < 0) ||
-                    (mPageRect.right > mScreenRect.right && mPageRect.left > mScreenRect.left && distanceX > 0) )
+            if( (mPageRect.left <= mScreenRect.left && mPageRect.right <= mScreenRect.right && distanceX < 0) ||
+                    (mPageRect.right >= mScreenRect.right && mPageRect.left >= mScreenRect.left && distanceX > 0) )
                 distanceX = 0f;
-            if( (mPageRect.top < mScreenRect.top && mPageRect.bottom < mScreenRect.bottom && distanceY < 0) ||
-                    (mPageRect.bottom > mScreenRect.bottom && mPageRect.top > mScreenRect.top && distanceY > 0) )
+            if( (mPageRect.top <= mScreenRect.top && mPageRect.bottom <= mScreenRect.bottom && distanceY < 0) ||
+                    (mPageRect.bottom >= mScreenRect.bottom && mPageRect.top >= mScreenRect.top && distanceY > 0) )
                 distanceY = 0f;
 
-            if(distanceX == 0f && distanceY == 0f) return true;
+            //Portrait restriction
+            if(isReset && mScreenRect.width() < mScreenRect.height()) distanceX = distanceY = 0f;
+            if(isReset && mScreenRect.height() <= mScreenRect.width()) distanceX = 0f;
 
-            mTransformMatrix.setTranslate(distanceX, distanceY);
-            mPageRectF.set(mPageRect);
-            mTransformMatrix.mapRect(mPageRectF);
+            if(distanceX == 0f && distanceY == 0f) return false;
 
-            rectF2Rect(mPageRectF, mPageRect);
+            Log.d(TAG, "DistanceX: " + distanceX);
+            Log.d(TAG, "DistanceY: " + distanceY);
+            mPageRect.left += distanceX;
+            mPageRect.right += distanceX;
+            mPageRect.top += distanceY;
+            mPageRect.bottom += distanceY;
 
             mPdfCore.renderPage(mPdfDoc, mPdfSurfaceHolder.getSurface(), mCurrentPageIndex,
                     mPageRect.left, mPageRect.top,
@@ -252,20 +260,25 @@ public class PdfActivity extends ActionBarActivity {
         @Override
         public boolean onFling(MotionEvent e1, MotionEvent e2, float velocityX, float velocityY){
             if(!isSurfaceCreated) return false;
-            if(!canFlipPage) return true;
             if(velocityX == 0f) return false;
 
-            if(velocityX < 100f){ //Forward
+            if(!checkFlippable()){
+                Log.d(TAG, "Not flippable");
+                return false;
+            }
+
+            if(velocityX < -200f){ //Forward
                 if(mCurrentPageIndex < mPageCount - 1){
-                    Log.d(TAG, "Flip backward");
+                    Log.d(TAG, "Flip forward");
                     mCurrentPageIndex++;
                     Log.d(TAG, "Next Index: " + mCurrentPageIndex);
 
                     mRenderPageWorker.submit(mRenderRunnable);
                 }
+                return true;
             }
 
-            if(velocityX > 100f){ //Backward
+            if(velocityX > 200f){ //Backward
                 Log.d(TAG, "Flip backward");
                 if(mCurrentPageIndex > 0){
                     mCurrentPageIndex--;
@@ -273,9 +286,10 @@ public class PdfActivity extends ActionBarActivity {
 
                     mRenderPageWorker.submit(mRenderRunnable);
                 }
+                return true;
             }
 
-            return true;
+            return false;
         }
     }
     private class ZoomingDetector extends ScaleGestureDetector.SimpleOnScaleGestureListener {
@@ -291,7 +305,6 @@ public class PdfActivity extends ActionBarActivity {
         public boolean onScale(ScaleGestureDetector detector){
             if(!isSurfaceCreated) return false;
 
-            canFlipPage = false;
 
             mAccumulateScale *= detector.getScaleFactor();
             mAccumulateScale = Math.max(1f, mAccumulateScale);
@@ -308,7 +321,7 @@ public class PdfActivity extends ActionBarActivity {
                     mPageRect.left, mPageRect.top,
                     mPageRect.width(), mPageRect.height());
 
-            if(mScreenRect.contains(mPageRect)) canFlipPage = true;
+            isReset = false;
 
             return true;
         }
