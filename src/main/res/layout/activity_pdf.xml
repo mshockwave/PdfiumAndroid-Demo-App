@@ -4,9 +4,9 @@
     android:layout_height="match_parent"
     tools:context="com.shockwave.pdfiumtest.PdfActivity">
 
-    <SurfaceView
-        android:id="@+id/view_surface_main"
-        android:layout_width="match_parent"
-        android:layout_height="match_parent" />
+    <com.shockwave.pdfiumtest.view.ImageViewPager
+        android:id="@+id/view_pager_main"
+        android:layout_height="match_parent"
+        android:layout_width="match_parent"/>
 
 </RelativeLayout>

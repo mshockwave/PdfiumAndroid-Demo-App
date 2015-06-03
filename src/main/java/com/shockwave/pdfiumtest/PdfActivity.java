@@ -1,358 +1,199 @@
 package com.shockwave.pdfiumtest;
 
-import android.content.Intent;
-import android.graphics.Matrix;
-import android.graphics.Rect;
-import android.graphics.RectF;
+import android.content.Context;
+import android.graphics.Bitmap;
 import android.net.Uri;
-import android.support.v7.app.ActionBarActivity;
 import android.os.Bundle;
+import android.support.v4.view.PagerAdapter;
+import android.support.v4.view.ViewPager;
+import android.support.v7.app.ActionBarActivity;
 import android.util.Log;
-import android.view.GestureDetector;
-import android.view.MotionEvent;
-import android.view.ScaleGestureDetector;
-import android.view.SurfaceHolder;
-import android.view.SurfaceView;
+import android.view.View;
+import android.view.ViewGroup;
 
 import com.shockwave.pdfium.PdfDocument;
 import com.shockwave.pdfium.PdfiumCore;
 
 import java.io.FileInputStream;
 import java.io.IOException;
+import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.LinkedBlockingQueue;
+
+import uk.co.senab.photoview.PhotoView;
+import uk.co.senab.photoview.PhotoViewAttacher;
 
 
 public class PdfActivity extends ActionBarActivity {
     private static final String TAG = PdfActivity.class.getName();
 
+    private PdfDocument mPdfDoc;
     private PdfiumCore mPdfCore;
+    private int mPageCount = -1;
 
-    private PdfDocument mPdfDoc = null;
-    private FileInputStream mDocFileStream = null;
+    private final BlockingQueue<PageEntity> mPagesPool = new LinkedBlockingQueue<>();
+    private static final int CACHE_PAGE_NUM = 5;
+    private final BlockingQueue<PageEntity> mActivePages = new LinkedBlockingQueue<>();
 
-    private GestureDetector mSlidingDetector;
-    private ScaleGestureDetector mZoomingDetector;
-
-    private int mCurrentPageIndex = 0;
-    private int mPageCount = 0;
-
-    private SurfaceHolder mPdfSurfaceHolder;
-    private boolean isSurfaceCreated = false;
-
-    private final Rect mPageRect = new Rect();
-    private final RectF mPageRectF = new RectF();
-    private final Rect mScreenRect = new Rect();
-    private final Matrix mTransformMatrix = new Matrix();
-    private boolean isScaling = false;
-    private boolean isReset = true;
-
-
-    private final ExecutorService mPreLoadPageWorker = Executors.newSingleThreadExecutor();
-    private final ExecutorService mRenderPageWorker = Executors.newSingleThreadExecutor();
-    private Runnable mRenderRunnable;
+    private final ExecutorService mPageLoaderExecutor = Executors.newSingleThreadExecutor();
+    private final ExecutorService mRenderExecutor = Executors.newSingleThreadExecutor();
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_pdf);
 
-        mPdfCore = new PdfiumCore(this);
+        ViewPager pdfViewPager = (ViewPager)findViewById(R.id.view_pager_main);
+        final PdfPagerAdapter adapter = new PdfPagerAdapter();
+        pdfViewPager.setAdapter(adapter);
 
-        mSlidingDetector = new GestureDetector(this, new SlidingDetector());
-        mZoomingDetector = new ScaleGestureDetector(this, new ZoomingDetector());
-
-        Intent intent = getIntent();
         Uri fileUri;
-        if( (fileUri = intent.getData()) == null){
+        if( (fileUri = getIntent().getData()) == null){
+            Log.e(TAG, "No Input file");
             finish();
-            return ;
+            return;
         }
 
-        mRenderRunnable = new Runnable() {
-            @Override
-            public void run() {
-                loadPageIfNeed(mCurrentPageIndex);
+        try{
+            FileInputStream fileIns = new FileInputStream(fileUri.getPath());
 
-                resetPageFit(mCurrentPageIndex);
-                mPdfCore.renderPage(mPdfDoc, mPdfSurfaceHolder.getSurface(), mCurrentPageIndex,
-                        mPageRect.left, mPageRect.top,
-                        mPageRect.width(), mPageRect.height());
+            mPdfCore = new PdfiumCore(this);
 
-                mPreLoadPageWorker.submit(new Runnable() {
+            mPdfDoc = mPdfCore.newDocument(fileIns.getFD());
+            if(mPdfDoc == null){
+                Log.e(TAG, "Open PdfDocument failed");
+                finish();
+                return;
+            }
+            mPageCount = mPdfCore.getPageCount(mPdfDoc);
+
+            //Create cached pages
+            int i;
+            for(i = 0; i < CACHE_PAGE_NUM; i++){
+                mPagesPool.add(new PageEntity(this));
+            }
+
+            adapter.notifyDataSetChanged();
+
+        }catch(IOException e){
+            Log.e(TAG, "File not exist, Uri: " + fileUri.toString());
+            finish();
+        }
+    }
+
+    private class PageEntity {
+        public PhotoView photoView;
+        public Bitmap contentBitmap;
+        public int pageIndex;
+        public PhotoViewAttacher photoAttacher;
+
+        public PageEntity(Context ctx){
+            photoView = new PhotoView(ctx);
+        }
+
+        public void updateImgBitmap(){
+            if(photoView != null){
+                photoView.setImageBitmap(contentBitmap);
+                if(photoAttacher != null){
+                    photoAttacher.update();
+                }
+            }
+        }
+    }
+
+    private void loadPageIfNeed(int index){
+        if( !(index >= 0 && index < mPageCount) ) return;
+        if(!mPdfDoc.hasPage(index)){
+            mPdfCore.openPage(mPdfDoc, index);
+        }
+    }
+
+    private class PdfPagerAdapter extends PagerAdapter {
+
+        @Override
+        public int getCount() {
+            return (mPageCount < 0)? 0 : mPageCount;
+        }
+
+        @Override
+        public Object instantiateItem(ViewGroup container, final int position){
+            if(mPagesPool.size() <= 0){
+                mPagesPool.add(new PageEntity(getApplicationContext()));
+            }
+
+            final PageEntity pageEntity = mPagesPool.poll();
+            if(pageEntity != null){
+                pageEntity.pageIndex = position;
+                loadPageIfNeed(position);
+
+                /**
+                 * Since PhotoViewAttacher would treat its ImageView as WeakReference
+                 * So we have to re-create it every time
+                 * **/
+                //if(pageEntity.photoAttacher != null) pageEntity.photoAttacher.cleanup();
+                pageEntity.photoAttacher = new PhotoViewAttacher(pageEntity.photoView);
+
+                /*Check page bitmap properties*/
+                int pageWidth = mPdfCore.getPageWidth(mPdfDoc, position);
+                int pageHeight = mPdfCore.getPageHeight(mPdfDoc, position);
+                if(pageEntity.contentBitmap == null || pageEntity.contentBitmap.isRecycled()){
+                    pageEntity.contentBitmap = Bitmap.createBitmap(pageWidth, pageHeight, Bitmap.Config.ARGB_8888);
+                }else if( !(pageEntity.contentBitmap.getHeight() == pageHeight &&
+                            pageEntity.contentBitmap.getWidth() == pageWidth) &&
+                            pageEntity.contentBitmap.getConfig().equals(Bitmap.Config.ARGB_8888) ){
+                        pageEntity.contentBitmap.recycle();
+                        pageEntity.contentBitmap = Bitmap.createBitmap(pageWidth, pageHeight, Bitmap.Config.ARGB_8888);
+                }
+
+                mRenderExecutor.submit(new Runnable() {
                     @Override
                     public void run() {
-                        loadPageIfNeed(mCurrentPageIndex + 1);
-                        loadPageIfNeed(mCurrentPageIndex + 2);
+                        mPdfCore.renderPage(mPdfDoc, pageEntity.contentBitmap, pageEntity.pageIndex);
+                        pageEntity.updateImgBitmap();
+                    }
+                });
+
+                container.addView(pageEntity.photoView, ViewGroup.LayoutParams.MATCH_PARENT/*width*/,
+                                                        ViewGroup.LayoutParams.WRAP_CONTENT/*height*/);
+
+                mActivePages.add(pageEntity);
+
+                /*Preload pages*/
+                mPageLoaderExecutor.submit(new Runnable() {
+                    @Override
+                    public void run() {
+                        loadPageIfNeed(position + 1);
+                        loadPageIfNeed(position + 2);
                     }
                 });
             }
-        };
 
-        SurfaceView surfaceView = (SurfaceView)findViewById(R.id.view_surface_main);
-        surfaceView.getHolder().addCallback(new SurfaceHolder.Callback() {
-            @Override
-            public void surfaceCreated(SurfaceHolder holder) {
-                isSurfaceCreated = true;
-                updateSurface(holder);
-                if (mPdfDoc != null) {
-                    mRenderPageWorker.submit(mRenderRunnable);
+            return pageEntity;
+        }
+
+        @Override
+        public void destroyItem(ViewGroup container, int position, Object object){
+            if(object instanceof PageEntity){
+                PageEntity removedPage = (PageEntity)object;
+                if(removedPage == mActivePages.peek()){
+                    removedPage = mActivePages.poll();
+                }else{
+                    mActivePages.remove(removedPage);
                 }
+
+                mPagesPool.add(removedPage);
             }
-
-            @Override
-            public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {
-                Log.w(TAG, "Surface Changed");
-                updateSurface(holder);
-                if(mPdfDoc != null){
-                    mRenderPageWorker.submit(mRenderRunnable);
-                }
-            }
-
-            @Override
-            public void surfaceDestroyed(SurfaceHolder holder) {
-                isSurfaceCreated = false;
-                Log.w(TAG, "Surface Destroy");
-            }
-        });
-
-        try{
-            mDocFileStream = new FileInputStream(fileUri.getPath());
-
-            mPdfDoc = mPdfCore.newDocument(mDocFileStream.getFD());
-            Log.d("Main", "Open Document");
-
-            mPageCount = mPdfCore.getPageCount(mPdfDoc);
-            Log.d(TAG, "Page Count: " + mPageCount);
-
-        }catch(IOException e){
-            e.printStackTrace();
-            Log.e("Main", "Data uri: " + fileUri.toString());
-        }
-    }
-
-    private void loadPageIfNeed(final int pageIndex){
-        if( pageIndex >= 0 && pageIndex < mPageCount && !mPdfDoc.hasPage(pageIndex) ){
-            Log.d(TAG, "Load page: " + pageIndex);
-            mPdfCore.openPage(mPdfDoc, pageIndex);
-        }
-    }
-
-    private void updateSurface(SurfaceHolder holder){
-        mPdfSurfaceHolder = holder;
-        mScreenRect.set(holder.getSurfaceFrame());
-    }
-
-    private void resetPageFit(int pageIndex){
-        float pageWidth = mPdfCore.getPageWidth(mPdfDoc, pageIndex);
-        float pageHeight = mPdfCore.getPageHeight(mPdfDoc, pageIndex);
-        float screenWidth = mPdfSurfaceHolder.getSurfaceFrame().width();
-        float screenHeight = mPdfSurfaceHolder.getSurfaceFrame().height();
-
-        /**Portrait**/
-        if(screenWidth < screenHeight){
-            if( (pageWidth / pageHeight) < (screenWidth / screenHeight) ){
-                //Situation one: fit height
-                pageWidth *= (screenHeight / pageHeight);
-                pageHeight = screenHeight;
-
-                mPageRect.top = 0;
-                mPageRect.left = (int)(screenWidth - pageWidth) / 2;
-                mPageRect.right = (int)(mPageRect.left + pageWidth);
-                mPageRect.bottom = (int)pageHeight;
-            }else{
-                //Situation two: fit width
-                pageHeight *= (screenWidth / pageWidth);
-                pageWidth = screenWidth;
-
-                mPageRect.left = 0;
-                mPageRect.top = (int)(screenHeight - pageHeight) / 2;
-                mPageRect.bottom = (int)(mPageRect.top + pageHeight);
-                mPageRect.right = (int)pageWidth;
-            }
-        }else{
-
-            /**Landscape**/
-            if( pageWidth > pageHeight ){
-                //Situation one: fit height
-                pageWidth *= (screenHeight / pageHeight);
-                pageHeight = screenHeight;
-
-                mPageRect.top = 0;
-                mPageRect.left = (int)(screenWidth - pageWidth) / 2;
-                mPageRect.right = (int)(mPageRect.left + pageWidth);
-                mPageRect.bottom = (int)pageHeight;
-            }else{
-                //Situation two: fit width
-                pageHeight *= (screenWidth / pageWidth);
-                pageWidth = screenWidth;
-
-                mPageRect.left = 0;
-                mPageRect.top = 0;
-                mPageRect.bottom = (int)(mPageRect.top + pageHeight);
-                mPageRect.right = (int)pageWidth;
-            }
-        }
-
-        isReset = true;
-    }
-
-    private void rectF2Rect(RectF inRectF, Rect outRect){
-        outRect.left = (int)inRectF.left;
-        outRect.right = (int)inRectF.right;
-        outRect.top = (int)inRectF.top;
-        outRect.bottom = (int)inRectF.bottom;
-    }
-
-    @Override
-    public boolean onTouchEvent(MotionEvent event){
-        boolean ret;
-
-        ret = mZoomingDetector.onTouchEvent(event);
-        if(!isScaling) ret |= mSlidingDetector.onTouchEvent(event);
-        ret |= super.onTouchEvent(event);
-
-        return ret;
-    }
-
-    private class SlidingDetector extends GestureDetector.SimpleOnGestureListener {
-
-        private boolean checkFlippable(){
-            return ( mPageRect.left >= mScreenRect.left &&
-                        mPageRect.right <= mScreenRect.right );
         }
 
         @Override
-        public boolean onScroll(MotionEvent e1, MotionEvent e2, float distanceX, float distanceY){
-            if(!isSurfaceCreated) return false;
-            Log.d(TAG, "Drag");
-
-            distanceX *= -1f;
-            distanceY *= -1f;
-
-            if( (mPageRect.left <= mScreenRect.left && mPageRect.right <= mScreenRect.right && distanceX < 0) ||
-                    (mPageRect.right >= mScreenRect.right && mPageRect.left >= mScreenRect.left && distanceX > 0) )
-                distanceX = 0f;
-            if( (mPageRect.top <= mScreenRect.top && mPageRect.bottom <= mScreenRect.bottom && distanceY < 0) ||
-                    (mPageRect.bottom >= mScreenRect.bottom && mPageRect.top >= mScreenRect.top && distanceY > 0) )
-                distanceY = 0f;
-
-            //Portrait restriction
-            if(isReset && mScreenRect.width() < mScreenRect.height()) distanceX = distanceY = 0f;
-            if(isReset && mScreenRect.height() <= mScreenRect.width()) distanceX = 0f;
-
-            if(distanceX == 0f && distanceY == 0f) return false;
-
-            Log.d(TAG, "DistanceX: " + distanceX);
-            Log.d(TAG, "DistanceY: " + distanceY);
-            mPageRect.left += distanceX;
-            mPageRect.right += distanceX;
-            mPageRect.top += distanceY;
-            mPageRect.bottom += distanceY;
-
-            mPdfCore.renderPage(mPdfDoc, mPdfSurfaceHolder.getSurface(), mCurrentPageIndex,
-                    mPageRect.left, mPageRect.top,
-                    mPageRect.width(), mPageRect.height());
-
-            return true;
-        }
-
-        @Override
-        public boolean onFling(MotionEvent e1, MotionEvent e2, float velocityX, float velocityY){
-            if(!isSurfaceCreated) return false;
-            if(velocityX == 0f) return false;
-
-            if(!checkFlippable()){
-                Log.d(TAG, "Not flippable");
-                return false;
-            }
-
-            if(velocityX < -200f){ //Forward
-                if(mCurrentPageIndex < mPageCount - 1){
-                    Log.d(TAG, "Flip forward");
-                    mCurrentPageIndex++;
-                    Log.d(TAG, "Next Index: " + mCurrentPageIndex);
-
-                    mRenderPageWorker.submit(mRenderRunnable);
-                }
-                return true;
-            }
-
-            if(velocityX > 200f){ //Backward
-                Log.d(TAG, "Flip backward");
-                if(mCurrentPageIndex > 0){
-                    mCurrentPageIndex--;
-                    Log.d(TAG, "Next Index: " + mCurrentPageIndex);
-
-                    mRenderPageWorker.submit(mRenderRunnable);
-                }
-                return true;
-            }
-
-            return false;
-        }
-    }
-    private class ZoomingDetector extends ScaleGestureDetector.SimpleOnScaleGestureListener {
-        private float mAccumulateScale = 1f;
-
-        @Override
-        public boolean onScaleBegin(ScaleGestureDetector detector){
-            isScaling = true;
-            return true;
-        }
-
-        @Override
-        public boolean onScale(ScaleGestureDetector detector){
-            if(!isSurfaceCreated) return false;
-
-
-            mAccumulateScale *= detector.getScaleFactor();
-            mAccumulateScale = Math.max(1f, mAccumulateScale);
-            float scaleValue = (mAccumulateScale > 1f)? detector.getScaleFactor() : 1f;
-            mTransformMatrix.setScale(scaleValue, scaleValue,
-                    detector.getFocusX(), detector.getFocusY());
-            mPageRectF.set(mPageRect);
-
-            mTransformMatrix.mapRect(mPageRectF);
-
-            rectF2Rect(mPageRectF, mPageRect);
-
-            mPdfCore.renderPage(mPdfDoc, mPdfSurfaceHolder.getSurface(), mCurrentPageIndex,
-                    mPageRect.left, mPageRect.top,
-                    mPageRect.width(), mPageRect.height());
-
-            isReset = false;
-
-            return true;
-        }
-
-        @Override
-        public void onScaleEnd(ScaleGestureDetector detector){
-            if(mAccumulateScale == 1f && !mScreenRect.contains(mPageRect)){
-                resetPageFit(mCurrentPageIndex);
-
-                mPdfCore.renderPage(mPdfDoc, mPdfSurfaceHolder.getSurface(), mCurrentPageIndex,
-                        mPageRect.left, mPageRect.top,
-                        mPageRect.width(), mPageRect.height());
-            }
-
-            isScaling = false;
-        }
+        public boolean isViewFromObject(View view, Object object) { return view == object; }
     }
 
     @Override
     public void onDestroy(){
-        try{
-            if(mPdfDoc != null && mDocFileStream != null){
-                mPdfCore.closeDocument(mPdfDoc);
-                Log.d("Main", "Close Document");
+        if(mPdfDoc != null && mPdfCore != null) mPdfCore.closeDocument(mPdfDoc);
 
-                mDocFileStream.close();
-            }
-        }catch(IOException e){
-            e.printStackTrace();
-        }finally{
-            super.onDestroy();
-        }
+        super.onDestroy();
     }
 }
