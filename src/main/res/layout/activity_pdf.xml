@@ -2,11 +2,13 @@
     xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    tools:context="com.shockwave.pdfiumtest.PdfActivity">
+    tools:context="com.shockwave.pdfiumtest.PdfActivity"
+    android:background="@android:color/black">
 
     <com.shockwave.pdfiumtest.view.ImageViewPager
         android:id="@+id/view_pager_main"
         android:layout_height="match_parent"
-        android:layout_width="match_parent"/>
+        android:layout_width="match_parent"
+        android:background="@android:color/transparent"/>
 
 </RelativeLayout>

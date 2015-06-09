@@ -38,7 +38,9 @@ public class MainActivity extends ActionBarActivity {
                 Uri data = intent.getData();
                 Log.i("Main", "File path: " + data.getPath());
 
-
+                Intent pdfIntent = new Intent(this, PdfActivity.class);
+                pdfIntent.setData(data);
+                startActivity(pdfIntent);
             }
         }
     }
